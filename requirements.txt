@@ -1,0 +1,15 @@
+google-genai
+openai
+gspread
+google-auth
+pandas
+python-dotenv
+beautifulsoup4
+playwright
+playwright-stealth
+requests
+lxml
+pyvirtualdisplay
+fastapi
+uvicorn
+

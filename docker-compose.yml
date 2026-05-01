@@ -1,0 +1,11 @@
+services:
+  enricher-api:
+    build: .
+    container_name: lei_enrichment_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    restart: always

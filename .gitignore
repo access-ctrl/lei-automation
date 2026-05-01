@@ -1,0 +1,22 @@
+# Secrets & Credentials
+.env
+service_account.json
+
+# Environment & Dependencies
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Logs & Output
+*.log
+research_*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Misc
+Archive.zip
+.serper_index
