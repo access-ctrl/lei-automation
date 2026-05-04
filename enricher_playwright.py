@@ -694,13 +694,79 @@ def main():
                 log(f"❌ Emergency flush failed: {e}")
 
     with sync_playwright() as p:
-        browser, context, page = setup_playwright_page(p)
+        log("Initializing Playwright (Sync) with stealth mode...")
+        browser = p.chromium.launch(
+            headless=False,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ]
+        )
 
         try:
+            processed_since_refresh = 0
+            context = None
+            page = None
+            
+            def create_fresh_page(browser):
+                nonlocal context, page
+                if context:
+                    try:
+                        page.close()
+                        context.close()
+                    except:
+                        pass
+                
+                log("Refreshing Browser Context (Every 10 companies)...")
+                context = browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+                )
+                
+                context.set_extra_http_headers({
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "sec-ch-ua": '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                })
+                
+                new_page = context.new_page()
+                Stealth().apply_stealth_sync(new_page)
+                
+                blocked_hosts = [
+                    "google-analytics.com",
+                    "analytics.google.com",
+                    "googletagmanager.com",
+                    "connect.facebook.net",
+                    "www.googleadservices.com",
+                    "googleads.g.doubleclick.net",
+                    "bat.bing.com",
+                    "cdn.krxd.net",
+                ]
+                
+                def route_intercept(route):
+                    if route.request.resource_type in ["image", "media", "font", "stylesheet"]:
+                        route.abort()
+                    elif any(domain in route.request.url for domain in blocked_hosts):
+                        route.abort()
+                    else:
+                        route.continue_()
+                        
+                new_page.route("**/*", route_intercept)
+                new_page.set_default_timeout(60000)
+                return new_page
+
             for index, row in filtered_df.iterrows():
                 if STOP_REQUESTED:
                     log("🛑 Stop signal received. Stopping enrichment cycle...")
                     break
+                
+                # Refresh browser context every 10 companies to prevent memory bloat
+                if context is None or processed_since_refresh >= 10:
+                    page = create_fresh_page(browser)
+                    processed_since_refresh = 0
+                
                 company_name = row["Company Name"]
                 log(f"--- Investigating: {company_name} ---")
 
@@ -742,7 +808,17 @@ def main():
                                         browser.close()
                                     except:
                                         pass
-                                    browser, context, page = setup_playwright_page(p)
+                                    browser = p.chromium.launch(
+                                        headless=False,
+                                        args=[
+                                            "--no-sandbox",
+                                            "--disable-dev-shm-usage",
+                                            "--disable-blink-features=AutomationControlled",
+                                        ]
+                                    )
+                                    context = None # Force recreation
+                                    page = create_fresh_page(browser)
+                                    processed_since_refresh = 0
 
                                 if attempt < max_retries - 1:
                                     log("Retrying in 5 seconds...")
@@ -908,6 +984,8 @@ def main():
                         all_sheet_updates = []
                     except Exception as e:
                         log(f"Batch update failed: {e}")
+
+                processed_since_refresh += 1
 
         except KeyboardInterrupt:
             log("\nCtrl+C received. Performing emergency flush...")
