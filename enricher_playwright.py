@@ -75,13 +75,8 @@ DIRECTORY_DOMAINS = [
     "onrender.com",
 ]
 FORBIDDEN_PHONE = "8800973322"
-# Load all Serper keys from environment
-SERPER_KEYS = [os.getenv("SERPER_API_KEY")]
-for i in range(1, 10):
-    k = os.getenv(f"SERPER_API_KEY_{i}")
-    if k:
-        SERPER_KEYS.append(k)
-SERPER_KEYS = [k for k in SERPER_KEYS if k]
+# Serper keys will be initialized after the log function is defined
+SERPER_KEYS = []
 current_serper_key_index = 0
 
 def get_current_serper_key():
@@ -123,6 +118,50 @@ def log(message):
     print(formatted_msg)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(formatted_msg + "\n")
+
+# -------------------- INITIALIZE SERPER KEYS --------------------
+def initialize_serper_keys():
+    global SERPER_KEYS
+    found_keys_dict = {}
+    
+    # Scan all environment variables for Serper keys
+    for env_key, value in os.environ.items():
+        # Check for primary key
+        if env_key == "SERPER_API_KEY":
+            if value and value.strip():
+                found_keys_dict[0] = value.strip()
+            else:
+                log("Serper Key #1 (Primary) is defined but EMPTY in .env")
+        
+        # Check for numbered keys (e.g., SERPER_API_KEY_1)
+        elif env_key.startswith("SERPER_API_KEY_"):
+            suffix = env_key.replace("SERPER_API_KEY_", "")
+            try:
+                num = int(suffix)
+                if value and value.strip():
+                    found_keys_dict[num] = value.strip()
+                else:
+                    log(f"Serper Key #{num+1} ({env_key}) is defined but EMPTY in .env")
+            except ValueError:
+                # Handle non-numeric suffixes if any (e.g., SERPER_API_KEY_TEST)
+                if value and value.strip():
+                    found_keys_dict[env_key] = value.strip()
+                else:
+                    log(f"Serper Key ({env_key}) is defined but EMPTY in .env")
+            
+    # Sort numeric keys in order (0, 1, 2...)
+    sorted_indices = sorted([k for k in found_keys_dict.keys() if isinstance(k, int)])
+    # Add any non-numeric keys at the end
+    non_numeric = sorted([k for k in found_keys_dict.keys() if not isinstance(k, int)])
+    
+    SERPER_KEYS = [found_keys_dict[i] for i in sorted_indices] + [found_keys_dict[k] for k in non_numeric]
+    
+    if not SERPER_KEYS:
+        log("❌ CRITICAL: No valid Serper API keys found in environment! Search functionality will fail.")
+    else:
+        log(f"✅ Dynamically loaded {len(SERPER_KEYS)} valid Serper API keys from environment.")
+
+initialize_serper_keys()
 
 # -------------------- HELPERS --------------------
 
@@ -215,8 +254,7 @@ def call_llm(prompt, text_content="", use_search=False, page=None):
                 log(f"Gemini Error: {e}")
                 if "quota" in error_msg or "429" in error_msg:
                     log("CRITICAL: Gemini API Quota reached! Stopping.")
-                    import sys
-                    sys.exit(1)
+                    raise Exception("Gemini API Quota reached")
                 return None
         else:
             # OpenAI Implementation
@@ -292,8 +330,7 @@ def call_llm(prompt, text_content="", use_search=False, page=None):
                     log(f"Attempt {attempt+1}: OpenAI Error: {e}")
                     if "quota" in error_msg or "429" in error_msg or "rate limit" in error_msg:
                         log("CRITICAL: API Quota reached or Rate Limited! Stopping.")
-                        import sys
-                        sys.exit(1)
+                        raise Exception("OpenAI API Quota or Rate Limit reached")
                     if attempt < retries - 1:
                         wait_time = (attempt + 1) * 5
                         log(f"Waiting {wait_time}s before retry...")
@@ -466,36 +503,40 @@ def serper_search(query):
     while True:
         api_key = get_current_serper_key()
         if not api_key:
-            log("❌ ALL Serper API keys exhausted!")
-            import sys
-            sys.exit(1)
+            if not SERPER_KEYS:
+                raise Exception("No Serper API keys were configured in .env.")
+            else:
+                raise Exception("ALL configured Serper API keys have been exhausted!")
         payload = json.dumps({"q": query, "num": 10})
         headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
         try:
             response = requests.post(url, headers=headers, data=payload)
-            # Check for quota exhaustion (usually 403 or 429)
             error_body = response.text.lower()
+
+            if response.status_code == 200:
+                # Successfully got results
+                data = response.json()
+                links = []
+                for result in data.get("organic", []):
+                    link = result.get("link")
+                    if link and not any(d in link for d in BLOCKED_DOMAINS):
+                        links.append(link)
+                log(f"Serper found {len(links)} organic results.")
+                return links
+            
+            # If not 200, check for quota issues
             if response.status_code in [403, 429] or "credits" in error_body or "quota" in error_body:
                 if rotate_serper_key():
                     continue
                 else:
-                    log(f"❌ Final Serper API key quota exceeded: {response.text}")
-                    import sys
-                    sys.exit(1)
+                    raise Exception("Final Serper API key quota exceeded.")
             
-            if response.status_code != 200:
-                log(f"CRITICAL: Serper API Error {response.status_code}: {response.text}")
-                import sys
-                sys.exit(1)
-            data = response.json()
-            links = []
-            for result in data.get("organic", []):
-                link = result.get("link")
-                if link and not any(d in link for d in BLOCKED_DOMAINS):
-                    links.append(link)
-            log(f"Serper found {len(links)} organic results.")
-            return links
+            # Other errors
+            log(f"CRITICAL: Serper API Error {response.status_code}: {response.text}")
+            raise Exception(f"Serper API Error {response.status_code}")
         except Exception as e:
+            if "Final Serper API key quota exceeded" in str(e):
+                raise e
             log(f"Serper Search Error: {e}")
             return []
 
@@ -785,16 +826,20 @@ def main():
 
                                         if contact_element:
                                             target_url = contact_element.get_attribute("href")
-                                            log(f"Navigating to contact page: {target_url}")
-                                            
-                                            contact_element.click()
-                                            time.sleep(2)
-                                            
-                                            current_url = page.url
-                                            log(f"Got the html for contact page: {current_url}")
+                                            if target_url:
+                                                if not target_url.startswith("http"):
+                                                    from urllib.parse import urljoin
+                                                    target_url = urljoin(page.url, target_url)
+                                                
+                                                log(f"Navigating to contact page: {target_url}")
+                                                page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                                                time.sleep(2)
+                                                
+                                                current_url = page.url
+                                                log(f"Got the html for contact page: {current_url}")
 
-                                            html_content_sub = page.content()
-                                            res_sub = agent_process_page(html_content_sub, row, current_url, page, is_official=True)
+                                                html_content_sub = page.content()
+                                                res_sub = agent_process_page(html_content_sub, row, current_url, page, is_official=True)
                                             res_sub = validate_contact_info(res_sub, company_details=row)
 
                                             if res_sub and res_sub.get("verified"):

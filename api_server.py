@@ -108,18 +108,6 @@ async def manual_rotate_serper(x_api_key: str = Header(None)):
             "message": "No more Serper keys available to rotate to."
         }
 
-    """
-    Triggers the lead enrichment script in the background.
-    Requires 'X-API-Key' header matching API_SERVER_KEY in .env
-    """
-    if x_api_key != API_SERVER_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized: Invalid API Key")
-
-    if is_running:
-        return {"status": "error", "message": "Enrichment is already in progress."}
-
-    background_tasks.add_task(run_task)
-    return {"status": "success", "message": "Enrichment started in background."}
 
 if __name__ == "__main__":
     import uvicorn
