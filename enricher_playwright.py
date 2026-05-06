@@ -106,7 +106,6 @@ def rotate_serper_key(is_manual=False):
 
 FILTERS = {
     "Enrichment Status": "pending",
-    "Company Type": "Company",
     "Status": "LAPSED",
 }
 

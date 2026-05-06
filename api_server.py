@@ -111,4 +111,5 @@ async def manual_rotate_serper(x_api_key: str = Header(None)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # reload=True allows the server to restart automatically when you pull new code
+    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
