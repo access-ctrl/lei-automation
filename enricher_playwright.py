@@ -170,6 +170,8 @@ def fetch_zaubacorp(url, p):
     log(f"Note: The main headless browser will remain idle during this specialized fetch.")
     vdisplay = None
     browser = None
+    context = None
+    page = None
     try:
         # The virtual display is now started globally in main() to ensure stability
         browser = p.chromium.launch(
@@ -211,9 +213,22 @@ def fetch_zaubacorp(url, p):
         log(f"ZaubaCorp fetch error: {e}")
         return None
     finally:
+        if page:
+            try:
+                page.close()
+                log(f"🧹 [HEADFUL] Closed Zauba page for: {url}")
+            except:
+                pass
+        if context:
+            try:
+                context.close()
+                log(f"🧹 [HEADFUL] Closed browser context after 1 site: {url}")
+            except:
+                pass
         if browser:
             try:
                 browser.close()
+                log(f"🧹 [HEADFUL] Closed browser after 1 site: {url}")
             except:
                 pass
         # Only closing the browser; the virtual display remains running in the background
@@ -765,14 +780,27 @@ def main():
                 context = None
                 page = None
                 
-                def create_fresh_page(browser):
+                def close_context_resources():
                     nonlocal context, page
-                    if context:
+                    if page:
                         try:
                             page.close()
-                            context.close()
                         except:
                             pass
+                        finally:
+                            page = None
+                    if context:
+                        try:
+                            context.close()
+                            log("🧹 [HEADLESS] Closed browser context")
+                        except:
+                            pass
+                        finally:
+                            context = None
+
+                def create_fresh_page(browser):
+                    nonlocal context, page
+                    close_context_resources()
                     
                     log("Refreshing Browser Context (Every 10 companies)...")
                     context = browser.new_context(
@@ -820,6 +848,8 @@ def main():
                     
                     # Refresh browser context every 10 companies to prevent memory bloat
                     if context is None or processed_since_refresh >= 10:
+                        if context is not None and processed_since_refresh >= 10:
+                            log("🧹 [HEADLESS] Processed 10 companies. Closing browser context for memory refresh...")
                         page = create_fresh_page(browser)
                         processed_since_refresh = 0
                     
@@ -1066,6 +1096,7 @@ def main():
                 log("\nCtrl+C received. Performing emergency flush...")
                 emergency_flush()
             finally:
+                close_context_resources()
                 if all_sheet_updates:
                     log(f"Pushing final batched updates...")
                     try:
