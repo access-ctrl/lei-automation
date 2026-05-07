@@ -9,3 +9,4 @@ services:
     volumes:
       - .:/app
     restart: always
+    mem_limit: 2g

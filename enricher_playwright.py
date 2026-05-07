@@ -6,6 +6,7 @@ import re
 import datetime
 import time
 from urllib.parse import urlparse
+import atexit
 from google import genai
 from google.genai import types
 from openai import OpenAI
@@ -29,6 +30,22 @@ STOP_REQUESTED = False  # Global flag for API-based stopping
 load_dotenv()
 
 LOG_FILE = f"research_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+VERBOSE_LOGS = os.getenv("VERBOSE_LOGS", "false").strip().lower() == "true"
+LOG_BUFFER_SIZE = int(os.getenv("LOG_BUFFER_SIZE", "25"))
+_LOG_BUFFER = []
+CHROMIUM_COMMON_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-background-networking",
+    "--disable-application-cache",
+    "--disk-cache-size=1",
+    "--media-cache-size=1",
+]
+CHROMIUM_HEADFUL_EXTRA_ARGS = [
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+]
 SHEET_ID = "1D7g1d0ayXFABI2RA_N3_vMB7UaqH6j_vuLeGnMhGYZ8"
 SHEET_NAME = "Expired LEI's"
 CREDS_FILE = "service_account.json"
@@ -115,8 +132,22 @@ def log(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     formatted_msg = f"[{timestamp}] {message}"
     print(formatted_msg)
+    _LOG_BUFFER.append(formatted_msg)
+    if len(_LOG_BUFFER) >= LOG_BUFFER_SIZE:
+        flush_log_buffer()
+
+def flush_log_buffer():
+    if not _LOG_BUFFER:
+        return
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(formatted_msg + "\n")
+        f.write("\n".join(_LOG_BUFFER) + "\n")
+    _LOG_BUFFER.clear()
+
+def vlog(message):
+    if VERBOSE_LOGS:
+        log(message)
+
+atexit.register(flush_log_buffer)
 
 # -------------------- INITIALIZE SERPER KEYS --------------------
 def initialize_serper_keys():
@@ -176,13 +207,7 @@ def fetch_zaubacorp(url, p):
         # The virtual display is now started globally in main() to ensure stability
         browser = p.chromium.launch(
             headless=False,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-blink-features=AutomationControlled",
-            ]
+            args=CHROMIUM_COMMON_ARGS + CHROMIUM_HEADFUL_EXTRA_ARGS
         )
         context = browser.new_context(
             viewport={'width': 1080, 'height': 720},
@@ -253,11 +278,7 @@ def setup_playwright_page(p):
     log("Initializing Playwright (Sync) with stealth mode...")
     browser = p.chromium.launch(
         headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-        ]
+        args=CHROMIUM_COMMON_ARGS
     )
     context = browser.new_context(
         viewport={'width': 1920, 'height': 1080},
@@ -625,7 +646,7 @@ def get_candidate_urls(company, page=None):
         log(f"❌ No URLs found for {company_name}")
         return []
 
-    log(f"Initial URLs found by Serper:\n" + "\n".join(f"  - {u}" for u in links[:20]))
+    vlog(f"Initial URLs found by Serper:\n" + "\n".join(f"  - {u}" for u in links[:20]))
 
     links_text = "\n".join(links[:20])
     prompt = f"""
@@ -768,11 +789,7 @@ def main():
             log("Initializing Playwright (Sync) with stealth mode...")
             browser = p.chromium.launch(
                 headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ]
+                args=CHROMIUM_COMMON_ARGS
             )
     
             try:
@@ -900,7 +917,7 @@ def main():
                                         break
                                     except Exception as e:
                                         err_msg = str(e).lower()
-                                        log(f"Attempt {attempt+1} failed to load {url}: {e}")
+                                        vlog(f"Attempt {attempt+1} failed to load {url}: {e}")
     
                                         if "target closed" in err_msg or "browser has been closed" in err_msg:
                                             log("Browser appears to have crashed. Restarting Playwright...")
@@ -910,18 +927,14 @@ def main():
                                                 pass
                                             browser = p.chromium.launch(
                                                 headless=True,
-                                                args=[
-                                                    "--no-sandbox",
-                                                    "--disable-dev-shm-usage",
-                                                    "--disable-blink-features=AutomationControlled",
-                                                ]
+                                                args=CHROMIUM_COMMON_ARGS
                                             )
                                             context = None # Force recreation
                                             page = create_fresh_page(browser)
                                             processed_since_refresh = 0
     
                                         if attempt < max_retries - 1:
-                                            log("Retrying in 5 seconds...")
+                                            vlog("Retrying in 5 seconds...")
                                             time.sleep(5)
     
                                 if not page_loaded:
@@ -1120,6 +1133,7 @@ def main():
     except Exception as e:
         log(f"Fatal error in main: {e}")
     finally:
+        flush_log_buffer()
         if vdisplay:
             vdisplay.stop()
             log("Background Virtual Display stopped.")
