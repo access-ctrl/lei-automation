@@ -14,6 +14,7 @@ from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 
 try:
+    # pyrefly: ignore [missing-import]
     from pyvirtualdisplay import Display
     HAS_VIRTUAL_DISPLAY = True
 except ImportError:
@@ -197,28 +198,30 @@ def fetch_zaubacorp(url, p):
     if STOP_REQUESTED:
         log("🛑 Stop signal received. Aborting Zauba fetch...")
         return None
-    log(f"🚀 ZaubaCorp detected. Switching to HEADFUL mode with Virtual Display for {url}...")
-    log(f"Note: The main headless browser will remain idle during this specialized fetch.")
-    vdisplay = None
+    log(f"🚀 ZaubaCorp detected. Fetching in HEADFUL mode: {url}...")
     browser = None
     context = None
     page = None
     try:
-        # The virtual display is now started globally in main() to ensure stability
         browser = p.chromium.launch(
             headless=False,
             args=CHROMIUM_COMMON_ARGS + CHROMIUM_HEADFUL_EXTRA_ARGS
         )
         context = browser.new_context(
             viewport={'width': 1080, 'height': 720},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            java_script_enabled=False
         )
         page = context.new_page()
         Stealth().apply_stealth_sync(page)
         
-        # Block unnecessary resources to save memory/bandwidth
+        # Fetch HTML only: block CSS, images, JS and other heavy assets.
         def route_intercept(route):
-            if route.request.resource_type in ["image", "media", "font", "stylesheet"]:
+            req = route.request
+            req_url = req.url.lower().split("?", 1)[0]
+            if req.resource_type in ["image", "media", "font", "stylesheet", "script"]:
+                route.abort()
+            elif req_url.endswith(".js") or req_url.endswith(".css"):
                 route.abort()
             else:
                 route.continue_()
@@ -241,22 +244,21 @@ def fetch_zaubacorp(url, p):
         if page:
             try:
                 page.close()
-                log(f"🧹 [HEADFUL] Closed Zauba page for: {url}")
+                log(f"🧹 [HEADFUL] Closed page for: {url}")
             except:
                 pass
         if context:
             try:
                 context.close()
-                log(f"🧹 [HEADFUL] Closed browser context after 1 site: {url}")
+                log(f"🧹 [HEADFUL] Closed context for: {url}")
             except:
                 pass
         if browser:
             try:
                 browser.close()
-                log(f"🧹 [HEADFUL] Closed browser after 1 site: {url}")
+                log(f"🧹 [HEADFUL] Closed browser for: {url}")
             except:
                 pass
-        # Only closing the browser; the virtual display remains running in the background
 
 # -------------------- HELPERS --------------------
 
@@ -282,7 +284,8 @@ def setup_playwright_page(p):
     )
     context = browser.new_context(
         viewport={'width': 1920, 'height': 1080},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        java_script_enabled=False
     )
     page = context.new_page()
     
@@ -791,9 +794,9 @@ def main():
                 headless=True,
                 args=CHROMIUM_COMMON_ARGS
             )
-    
             try:
                 processed_since_refresh = 0
+                processed_since_hard_restart = 0
                 context = None
                 page = None
                 
@@ -815,6 +818,19 @@ def main():
                         finally:
                             context = None
 
+                def close_all_browsers():
+                    nonlocal browser, context, page
+                    close_context_resources()
+                    if browser:
+                        try:
+                            browser.close()
+                            log("🧹 [HARD REFRESH] Closed headless browser")
+                        except:
+                            pass
+                        finally:
+                            browser = None
+
+
                 def create_fresh_page(browser):
                     nonlocal context, page
                     close_context_resources()
@@ -822,7 +838,8 @@ def main():
                     log("Refreshing Browser Context (Every 10 companies)...")
                     context = browser.new_context(
                         viewport={'width': 1920, 'height': 1080},
-                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                        java_script_enabled=False
                     )
                     
                     context.set_extra_http_headers({
@@ -862,6 +879,14 @@ def main():
                     if STOP_REQUESTED:
                         log("🛑 Stop signal received. Stopping enrichment cycle...")
                         break
+                    
+                    # Hard Restart both browsers every 20 companies to keep RAM fresh
+                    if processed_since_hard_restart >= 20:
+                        log("🔄 [HARD REFRESH] Processed 20 companies. Restarting all browser processes to clear RAM...")
+                        close_all_browsers()
+                        browser = p.chromium.launch(headless=True, args=CHROMIUM_COMMON_ARGS)
+                        processed_since_hard_restart = 0
+                        processed_since_refresh = 0 # Also reset sub-counter
                     
                     # Refresh browser context every 10 companies to prevent memory bloat
                     if context is None or processed_since_refresh >= 10:
@@ -965,7 +990,9 @@ def main():
                                     else:
                                         log(f"Successfully bypassed Cloudflare on {url}")
     
+                                log(f"Capturing page HTML for {url}...")
                                 html_content = page.content()
+                                log(f"Captured page HTML for {url}")
                             except Exception as e:
                                 log(f"Error scanning {url}: {e}")
                                 continue
@@ -1104,6 +1131,7 @@ def main():
                         break
     
                     processed_since_refresh += 1
+                    processed_since_hard_restart += 1
     
             except KeyboardInterrupt:
                 log("\nCtrl+C received. Performing emergency flush...")
