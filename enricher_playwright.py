@@ -82,6 +82,8 @@ BLOCKED_DOMAINS = [
     "credhive.in",
     "tracxn.com",
     "legalentityidentifier.in",
+    "globallei.in",
+    "lei-worldwide.com"
 ]
 DIRECTORY_DOMAINS = [
     "zaubacorp.com",
@@ -262,6 +264,22 @@ def fetch_zaubacorp(url, p):
 
 # -------------------- HELPERS --------------------
 
+def decode_cloudflare_email(cfemail):
+    """
+    Decodes a Cloudflare-obfuscated email address.
+    """
+    try:
+        r = int(cfemail[:2], 16)
+        email = "".join(
+            [
+                chr(int(cfemail[i : i + 2], 16) ^ r)
+                for i in range(2, len(cfemail), 2)
+            ]
+        )
+        return email
+    except Exception:
+        return None
+
 def safe_clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
@@ -437,7 +455,24 @@ def call_llm(prompt, text_content="", use_search=False, page=None):
         return None
 
 def agent_process_page(html, company_details, source_url, page, is_official=False):
+    if "[email protected]" in html:
+        log(f"⚠️  Detected '[email protected]' in raw HTML for {source_url}. Attempting to decode...")
+
     soup = BeautifulSoup(html, "lxml")
+    
+    # Decode Cloudflare protected emails
+    for cf_email in soup.find_all(class_="__cf_email__"):
+        if cf_email.has_attr("data-cfemail"):
+            decoded = decode_cloudflare_email(cf_email["data-cfemail"])
+            if decoded:
+                if cf_email.name == "a":
+                    cf_email["href"] = f"mailto:{decoded}"
+                    cf_email.string = decoded
+                    # Remove the class so it's not processed again
+                    del cf_email["class"]
+                else:
+                    cf_email.replace_with(decoded)
+    
     page_title = soup.title.string if soup.title else "No Title"
     top_headers = " | ".join([h.get_text(strip=True) for h in soup.find_all(["h1", "h2"])[:3]])
     
@@ -539,6 +574,8 @@ GST/Udyam: {company_details.get('GST/Udayam Number')}
 
 ### CONTACT EXTRACTION RULES
 - Extract Email and Phone ONLY if directly visible on the page.
+- EMAIL PROTECTION:
+  - DO NOT return "[email protected]". If the email is protected, masked, or obfuscated, return "NOT_FOUND" unless you can find the actual email address elsewhere on the page.
 - PHONE VALIDATION:
   - The phone number MUST be at least 10 digits long.
   - PRIORITIZE +91 NUMBERS: If a number starts with +91 or is a 10-digit Indian mobile, it is HIGH TRUST.
@@ -702,7 +739,7 @@ def validate_contact_info(res, company_details=None):
     email = res.get("email", "NOT_FOUND")
     phone = res.get("phone", "NOT_FOUND")
 
-    placeholders = ["example.com", "test@test", "1234567890", "0123456789", "domain.com", "email@email", FORBIDDEN_PHONE]
+    placeholders = ["example.com", "test@test", "1234567890", "0123456789", "domain.com", "email@email", FORBIDDEN_PHONE, "[email protected]"]
     if any(p in email.lower() for p in placeholders):
         email = "NOT_FOUND"
     
